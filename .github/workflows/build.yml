@@ -17,25 +17,31 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Grant Execute Permission for Gradle Wrapper
+    - name: Run Build in Subfolder Automatically
       run: |
-        if [ -f gradlew ]; then
-          chmod +x gradlew
-        else
-          echo "gradlew wrapper missing from root directory"
-        fi
-
-    - name: Compile and Build Assembly Release APK
-      run: |
-        if [ -f gradlew ]; then
-          ./gradlew assembleRelease --no-daemon
-        else
-          echo "Cannot build because project files are not in the root directory folder."
+        # Look for the directory containing gradlew dynamically
+        GRADLEW_PATH=$(find . -name gradlew -print -quit)
+        
+        if [ -z "$GRADLEW_PATH" ]; then
+          echo "Error: Could not find gradlew anywhere in the uploaded files."
           exit 1
         fi
+        
+        # Get the directory of that file
+        SUBFOLDER_DIR=$(dirname "$GRADLEW_PATH")
+        echo "Found project files inside: $SUBFOLDER_DIR"
+        
+        # Navigate to the correct directory, grant permissions, and build the APK
+        cd "$SUBFOLDER_DIR"
+        chmod +x gradlew
+        ./gradlew assembleRelease --no-daemon
+        
+        # Copy the finished APK file back to the root workspace area so GitHub can find it
+        mkdir -p $GITHUB_WORKSPACE/output_apk
+        find . -name "*.apk" -exec cp {} $GITHUB_WORKSPACE/output_apk/ \;
 
     - name: Upload Finished APK Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Rui-APK
-        path: app/build/outputs/apk/release/app-release-unsigned.apk
+        path: output_apk/
