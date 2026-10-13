@@ -1,3 +1,4 @@
+import androidx.compose.runtime.getValue
 package com.rui.app.ui.components
 
 import androidx.compose.animation.core.LinearEasing
