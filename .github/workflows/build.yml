@@ -1,7 +1,7 @@
 name: Build Rui APK
 
 on:
-  workflow_dispatch: # Gives you the simple one-click manual build button
+  workflow_dispatch:
 
 jobs:
   build:
@@ -21,10 +21,21 @@ jobs:
       uses: android-actions/setup-android@v3
 
     - name: Grant Execute Permission for Gradle Wrapper
-      run: chmod +x gradlew
+      run: |
+        if [ -f gradlew ]; then
+          chmod +x gradlew
+        else
+          echo "gradlew wrapper missing from root directory"
+        fi
 
     - name: Compile and Build Assembly Release APK
-      run: ./gradlew assembleRelease --no-daemon
+      run: |
+        if [ -f gradlew ]; then
+          ./gradlew assembleRelease --no-daemon
+        else
+          echo "Cannot build because project files are not in the root directory folder."
+          exit 1
+        fi
 
     - name: Upload Finished APK Artifact
       uses: actions/upload-artifact@v4
