@@ -1,0 +1,10 @@
+<resources>
+    <color name="rui_bg">#FF0A0A1C</color>
+    <color name="rui_icon_bg">#FF05051A</color>
+    <style name="Theme.Rui" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/rui_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
