@@ -2,46 +2,71 @@ name: Build Rui APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main, master]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Source Code
-      uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-    - name: Set up Java Development Kit (JDK) 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-    - name: Run Build in Subfolder Automatically
-      run: |
-        # Look for the directory containing gradlew dynamically
-        GRADLEW_PATH=$(find . -name gradlew -print -quit)
-        
-        if [ -z "$GRADLEW_PATH" ]; then
-          echo "Error: Could not find gradlew anywhere in the uploaded files."
-          exit 1
-        fi
-        
-        # Get the directory of that file
-        SUBFOLDER_DIR=$(dirname "$GRADLEW_PATH")
-        echo "Found project files inside: $SUBFOLDER_DIR"
-        
-        # Navigate to the correct directory, grant permissions, and build the APK
-        cd "$SUBFOLDER_DIR"
-        chmod +x gradlew
-        ./gradlew assembleRelease --no-daemon
-        
-        # Copy the finished APK file back to the root workspace area so GitHub can find it
-        mkdir -p $GITHUB_WORKSPACE/output_apk
-        find . -name "*.apk" -exec cp {} $GITHUB_WORKSPACE/output_apk/ \;
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-    - name: Upload Finished APK Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: Rui-APK
-        path: output_apk/
+      - name: Find or extract Android project and build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_DIR=""
+
+          # First look for an already-extracted Gradle Android project.
+          while IFS= read -r -d '' file; do
+            candidate="$(dirname "$file")"
+            if [[ -f "$candidate/app/build.gradle.kts" || -f "$candidate/app/build.gradle" ]]; then
+              PROJECT_DIR="$candidate"
+              break
+            fi
+          done < <(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' -print0)
+
+          # If the repository contains the supplied nested ZIP, extract it.
+          if [[ -z "$PROJECT_DIR" ]]; then
+            INNER_ZIP="$(find . -type f -name 'Rui-Android-Offline-AI.zip' -not -path './.git/*' -print -quit)"
+            if [[ -n "$INNER_ZIP" ]]; then
+              mkdir -p _rui_extracted
+              unzip -oq "$INNER_ZIP" -d _rui_extracted
+              while IFS= read -r -d '' file; do
+                candidate="$(dirname "$file")"
+                if [[ -f "$candidate/app/build.gradle.kts" || -f "$candidate/app/build.gradle" ]]; then
+                  PROJECT_DIR="$candidate"
+                  break
+                fi
+              done < <(find _rui_extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print0)
+            fi
+          fi
+
+          if [[ -z "$PROJECT_DIR" ]]; then
+            echo "::error::Could not find the Android project. Ensure Rui-Android-Offline-AI.zip or the extracted rui-android project files are committed to this repository."
+            find . -maxdepth 5 -type f | sort | head -200
+            exit 1
+          fi
+
+          echo "Android project found at: $PROJECT_DIR"
+          gradle -p "$PROJECT_DIR" assembleDebug --no-daemon --stacktrace
+          echo "APK_PATH=$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rui-APK
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
