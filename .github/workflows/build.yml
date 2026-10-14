@@ -1,3 +1,4 @@
+```yaml
 name: Build Rui APK
 
 on:
@@ -8,65 +9,144 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout source
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.9'
-
-      - name: Find or extract Android project and build APK
+      - name: Extract project ZIP if needed
         shell: bash
         run: |
-          set -euo pipefail
-          PROJECT_DIR=""
-
-          # First look for an already-extracted Gradle Android project.
-          while IFS= read -r -d '' file; do
-            candidate="$(dirname "$file")"
-            if [[ -f "$candidate/app/build.gradle.kts" || -f "$candidate/app/build.gradle" ]]; then
-              PROJECT_DIR="$candidate"
-              break
+          set -e
+          if ! find . -name pubspec.yaml -o -name settings.gradle -o -name settings.gradle.kts | grep -q .; then
+            ZIP=$(find . -type f -name 'Rui-Android-Offline-AI.zip' -print -quit)
+            if [ -z "$ZIP" ]; then
+              ZIP=$(find . -type f -name '*.zip' -print -quit)
             fi
-          done < <(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' -print0)
-
-          # If the repository contains the supplied nested ZIP, extract it.
-          if [[ -z "$PROJECT_DIR" ]]; then
-            INNER_ZIP="$(find . -type f -name 'Rui-Android-Offline-AI.zip' -not -path './.git/*' -print -quit)"
-            if [[ -n "$INNER_ZIP" ]]; then
-              mkdir -p _rui_extracted
-              unzip -oq "$INNER_ZIP" -d _rui_extracted
-              while IFS= read -r -d '' file; do
-                candidate="$(dirname "$file")"
-                if [[ -f "$candidate/app/build.gradle.kts" || -f "$candidate/app/build.gradle" ]]; then
-                  PROJECT_DIR="$candidate"
-                  break
-                fi
-              done < <(find _rui_extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print0)
+            if [ -n "$ZIP" ]; then
+              mkdir -p _extracted
+              unzip -oq "$ZIP" -d _extracted
             fi
           fi
 
-          if [[ -z "$PROJECT_DIR" ]]; then
-            echo "::error::Could not find the Android project. Ensure Rui-Android-Offline-AI.zip or the extracted rui-android project files are committed to this repository."
-            find . -maxdepth 5 -type f | sort | head -200
-            exit 1
+      - name: Find Flutter project
+        id: project
+        shell: bash
+        run: |
+          set -e
+          FILE=$(find . -type f -name pubspec.yaml \
+            -not -path './.git/*' -not -path '*/.dart_tool/*' \
+            -print -quit)
+          if [ -n "$FILE" ]; then
+            echo "type=flutter" >> "$GITHUB_OUTPUT"
+            echo "dir=$(dirname "$FILE")" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "Android project found at: $PROJECT_DIR"
-          gradle -p "$PROJECT_DIR" assembleDebug --no-daemon --stacktrace
-          echo "APK_PATH=$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+          FILE=$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path './.git/*' -print -quit)
+          if [ -n "$FILE" ]; then
+            DIR=$(dirname "$FILE")
+            if [ -f "$DIR/app/build.gradle" ] || [ -f "$DIR/app/build.gradle.kts" ]; then
+              echo "type=android" >> "$GITHUB_OUTPUT"
+              echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
 
-      - name: Upload APK
+          echo "No Flutter or Android Gradle project found."
+          find . -maxdepth 5 -type f | head -200
+          exit 1
+
+      - name: Setup Flutter
+        if: steps.project.outputs.type == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install Flutter dependencies
+        if: steps.project.outputs.type == 'flutter'
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: flutter pub get
+
+      - name: Fix llamafu namespace
+        if: steps.project.outputs.type == 'flutter'
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -e
+          python3 - <<'PY'
+          import json, os, re, sys
+          from urllib.parse import urlparse, unquote
+          from pathlib import Path
+
+          config = Path(".dart_tool/package_config.json")
+          if not config.exists():
+              sys.exit("package_config.json not found")
+
+          data = json.loads(config.read_text())
+          package = next(
+              (p for p in data["packages"] if p["name"] == "llamafu"),
+              None
+          )
+          if package is None:
+              print("llamafu is not a dependency; nothing to patch")
+              sys.exit(0)
+
+          uri = package["rootUri"]
+          if uri.startswith("file:"):
+              root = Path(unquote(urlparse(uri).path))
+          else:
+              root = (config.parent / uri).resolve()
+
+          gradle = root / "android" / "build.gradle"
+          if not gradle.exists():
+              sys.exit(f"Plugin Gradle file not found: {gradle}")
+
+          text = gradle.read_text()
+          if not re.search(r'(?m)^\s*namespace\s+', text):
+              text, count = re.subn(
+                  r'(?m)^([ \t]*)android\s*\{',
+                  lambda m: m.group(0) + "\n" + m.group(1)
+                            + "    namespace 'com.llamafu.llamafu'",
+                  text, count=1
+              )
+              if count != 1:
+                  sys.exit("Could not add namespace to llamafu")
+
+              gradle.write_text(text)
+
+          print("Verified llamafu namespace in", gradle)
+          PY
+
+      - name: Build Flutter APK
+        if: steps.project.outputs.type == 'flutter'
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: flutter build apk --release
+
+      - name: Build Android APK
+        if: steps.project.outputs.type == 'android'
+        run: gradle -p "${{ steps.project.outputs.dir }}" assembleDebug --no-daemon
+
+      - name: Upload Flutter APK
+        if: steps.project.outputs.type == 'flutter'
         uses: actions/upload-artifact@v4
         with:
           name: Rui-APK
-          path: ${{ env.APK_PATH }}
+          path: ${{ steps.project.outputs.dir }}/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
+
+      - name: Upload Android APK
+        if: steps.project.outputs.type == 'android'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rui-APK
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+```
