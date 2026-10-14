@@ -5,18 +5,59 @@ on:
   push:
     branches:
       - main
+      - master
 
 jobs:
-  check:
+  build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Validate workflow
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Find Android project and build APK
+        shell: bash
         run: |
-          echo "YAML syntax is valid."
-          echo "Repository files:"
-          ls -la
-          echo "Workflow validation complete."
-```
+          set -e
+          PROJECT_DIR=""
+
+          while IFS= read -r -d '' file; do
+            candidate="$(dirname "$file")"
+            if [ -f "$candidate/app/build.gradle" ] || [ -f "$candidate/app/build.gradle.kts" ]; then
+              PROJECT_DIR="$candidate"
+              break
+            fi
+          done < <(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' -print0)
+
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: No Android Gradle project found."
+            find . -maxdepth 5 -type f | sort | head -200
+            exit 1
+          fi
+
+          echo "Found Android project: $PROJECT_DIR"
+
+          if [ -f "$PROJECT_DIR/gradlew" ]; then
+            chmod +x "$PROJECT_DIR/gradlew"
+            "$PROJECT_DIR/gradlew" -p "$PROJECT_DIR" assembleDebug
+          else
+            gradle -p "$PROJECT_DIR" assembleDebug
+          fi
+
+          echo "APK_PATH=$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rui-APK
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
